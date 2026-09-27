@@ -20,7 +20,6 @@ export default function LoginPage({ onLoginSuccess }) {
     try {
       const res = await api.login(username.trim(), password.trim());
       localStorage.setItem('mybot_token', res.access_token);
-      localStorage.setItem('mybot_secret_path', res.admin_secret_path);
       setLoading(false);
       onLoginSuccess(res);
     } catch (err) {

@@ -191,6 +191,19 @@ export default function App() {
     setIsAuthenticated(false);
   };
 
+  // api.js drops the stored token and fires this event whenever the backend
+  // rejects our JWT (expiry, or an engine restart with a new secret), so the
+  // panel returns to the login screen instead of sitting on a page where every
+  // request silently 401s. The ref keeps the listener stable.
+  const logoutRef = useRef(handleLogout);
+  logoutRef.current = handleLogout;
+
+  useEffect(() => {
+    const onUnauthorized = () => logoutRef.current();
+    window.addEventListener('mybot:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('mybot:unauthorized', onUnauthorized);
+  }, []);
+
   const handleUpdateBot = (updatedBot) => {
     setCurrentBot(updatedBot);
     localStorage.setItem('mybot_current_bot', JSON.stringify(updatedBot));

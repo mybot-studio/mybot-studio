@@ -305,5 +305,68 @@
     "auto_typing_desc": "Display typing / uploading status before sending",
     "cf_worker": "Cloudflare Worker Reverse Proxy URL",
     "custom_proxy": "HTTP / SOCKS5 Proxy"
+  },
+  "api": {
+    "auth": {
+      "invalid": "Wrong username or password.",
+      "locked": "Too many failed attempts. Try again in {seconds} seconds.",
+      "required": "Please sign in to perform this action.",
+      "expired": "Session is invalid or has expired.",
+      "credentials_updated": "Admin credentials updated.",
+      "current_password_wrong": "Current password is incorrect.",
+      "username_taken": "That username is already in use.",
+      "not_configured": "No administrator is configured yet. Start the panel once with DEFAULT_ADMIN_USER and DEFAULT_ADMIN_PASS set."
+    },
+    "system": {
+      "update_disabled": "Updating from the panel is disabled. Set ENABLE_SELF_UPDATE=true to allow it.",
+      "update_started": "The update script was started in a separate process.",
+      "update_script_missing": "update.sh was not found in the project.",
+      "up_to_date": "Up to date."
+    },
+    "net": {
+      "blocked": "This address is not allowed: {reason}",
+      "ok": "Connection successful ({ms} ms)",
+      "failed": "Connection failed: {error}"
+    },
+    "flow": {
+      "invalid": "The flow cannot be saved: {errors}",
+      "not_found": "Flow not found.",
+      "saved": "The flow was saved.",
+      "imported": "The template was imported ({count} nodes).",
+      "import_failed": "The template file could not be read: {error}"
+    },
+    "plugin": {
+      "not_found": "Plugin not found.",
+      "disabled": "This plugin has been disabled by the administrator."
+    },
+    "i18n": {
+      "only_json": "Only .json files are accepted.",
+      "invalid_json": "The uploaded file is not valid JSON.",
+      "bad_code": "Language code must be 2 to 5 letters.",
+      "installed": "The {code} language pack was added."
+    },
+    "fonts": {
+      "bad_type": "Only .ttf, .otf and .woff2 font files are accepted.",
+      "bad_name": "The font file name is not valid.",
+      "installed": "The {name} font was added."
+    },
+    "bot": {
+      "not_found": "Bot not found.",
+      "avatar_too_large": "The profile photo must be 10 MB or smaller.",
+      "avatar_invalid": "That image cannot be used as a profile photo.",
+      "photo_rejected": "Telegram did not accept the new profile photo.",
+      "photo_failed": "The profile photo could not be uploaded to Telegram.",
+      "commands_synced": "The command menu was synced with Telegram."
+    },
+    "webhook": {
+      "denied": "The webhook secret does not match this bot."
+    },
+    "simulator": {
+      "executed_steps": "Executed steps: {steps}",
+      "failed": "The simulation could not be completed."
+    },
+    "common": {
+      "saved": "Changes saved."
+    }
   }
 }

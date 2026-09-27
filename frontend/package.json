@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node --test src/locales/i18nAudit.test.mjs src/services/api.test.mjs src/api/botSettings.test.mjs",
     "test:i18n": "node --test src/locales/i18nAudit.test.mjs src/services/api.test.mjs"
   },
   "dependencies": {

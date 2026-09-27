@@ -6,6 +6,8 @@ from fastapi.staticfiles import StaticFiles
 
 import json
 import aiosqlite
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
 from app.api.auth import router as auth_router
 from app.api.bots import router as bots_router
 from app.api.flows import router as flows_router
@@ -16,6 +18,8 @@ from app.api.simulator import router as simulator_router
 from app.api.system import router as system_router
 from app.api.webhook import router as webhook_router
 from app.config import settings
+from app.core.i18n import language_from_request, t
+from app.core.security import decode_access_token, is_public_path
 from app.database import init_db
 from app.bot_worker import start_bot_worker, stop_bot_worker
 
@@ -64,10 +68,42 @@ app = FastAPI(
     redoc_url=None
 )
 
+# Auth guard for the whole panel API.
+#
+# A JWT used to be minted at login and then ignored: every /api route, including
+# the one that shells out to deploy/update.sh, answered anonymous callers. Admin
+# routers also carry an explicit `require_admin` dependency; this middleware is
+# the default-deny net that catches routes added later. Registered before CORS
+# so CORS ends up outermost and its headers reach these 401 responses.
+@app.middleware("http")
+async def guard_admin_api(request: Request, call_next):
+    path, method = request.url.path, request.method
+    if not path.startswith("/api") or is_public_path(path, method):
+        return await call_next(request)
+
+    lang = language_from_request(request)
+    header = request.headers.get("authorization", "")
+    token = header[7:].strip() if header[:7].lower() == "bearer " else ""
+    try:
+        if not token:
+            raise HTTPException(status_code=401, detail=t("api.auth.required", lang))
+        decode_access_token(token, lang)
+    except HTTPException as error:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"detail": error.detail},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
+
 # CORS
+#
+# `allow_origins=["*"]` combined with `allow_credentials=True` is rejected by
+# every browser and lets any site issue credentialed requests; the panel is a
+# single-tenant install, so the origins are configured explicitly (CORS_ORIGINS).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -92,9 +128,13 @@ app.mount("/media", StaticFiles(directory=_UPLOAD_DIR), name="uploads")
 
 @app.get("/")
 async def health_check():
+    """Liveness probe.
+
+    This endpoint used to hand out `admin_secret_path`, which made the "secret"
+    panel path public to anyone who opened the root URL.
+    """
     return {
         "status": "online",
         "app": settings.APP_NAME,
         "version": settings.VERSION,
-        "admin_secret_path": settings.ADMIN_SECRET_PATH
     }

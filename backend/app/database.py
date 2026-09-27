@@ -3,6 +3,7 @@ import json
 import logging
 from typing import AsyncGenerator
 from app.config import settings
+from app.core.passwords import hash_password
 
 logger = logging.getLogger(__name__)
 
@@ -147,5 +148,37 @@ async def init_db():
             );
         """)
         
+        # Execution logs are read most-recent-first per bot; keep that cheap.
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_execution_logs_bot
+            ON execution_logs (bot_id, id DESC)
+        """)
+
         await db.commit()
+        await _seed_admin(db)
         logger.info("Database initialized successfully with WAL mode.")
+
+
+async def _seed_admin(db: aiosqlite.Connection) -> None:
+    """Creates the single admin account exactly once, from env only.
+
+    Login used to accept DEFAULT_ADMIN_PASS forever; seeding here means the
+    default password works only while the account does not exist yet, and the
+    operator is forced to set it explicitly (no shipped default).
+    """
+    cursor = await db.execute("SELECT COUNT(1) FROM admin_users")
+    row = await cursor.fetchone()
+    if row and row[0]:
+        return
+    if not settings.DEFAULT_ADMIN_PASS:
+        logger.warning(
+            "No administrator account exists. Start once with DEFAULT_ADMIN_USER "
+            "and DEFAULT_ADMIN_PASS set to create it."
+        )
+        return
+    await db.execute(
+        "INSERT INTO admin_users (username, password_hash) VALUES (?, ?)",
+        (settings.DEFAULT_ADMIN_USER, hash_password(settings.DEFAULT_ADMIN_PASS)),
+    )
+    await db.commit()
+    logger.info("Administrator account '%s' created from environment.", settings.DEFAULT_ADMIN_USER)

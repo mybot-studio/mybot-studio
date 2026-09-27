@@ -5,33 +5,50 @@ import time
 from typing import Any, Dict
 import aiosqlite
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import settings
+from app.core.i18n import language_from_request, t
+from app.core.net import UrlPolicyError, validate_outbound_url
+from app.core.security import require_admin
 from app.database import get_db
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 GITHUB_REPO = "mybot-engine/mybot"
 
+
 class ProxyConfigRequest(BaseModel):
     cf_worker_url: str = ""
     http_proxy: str = ""
     proxy_mode: str = "all"  # 'all', 'selected', 'none'
 
+
 @router.get("/info")
-async def get_system_info() -> Dict[str, Any]:
+async def get_system_info(request: Request, admin: str = Depends(require_admin)) -> Dict[str, Any]:
+    """Diagnostics for the settings screen.
+
+    `admin_secret_path` used to be served here without authentication, which
+    handed out the one thing protecting the panel. It is only ever returned by
+    a successful login response now.
+    """
+    lang = language_from_request(request)
     return {
         "app_name": settings.APP_NAME,
         "version": settings.VERSION,
-        "admin_secret_path": settings.ADMIN_SECRET_PATH,
         "is_docker": os.path.exists("/.dockerenv"),
-        "debug": settings.DEBUG
+        "debug": settings.DEBUG,
+        "role": settings.ROLE,
+        "self_update_enabled": settings.ENABLE_SELF_UPDATE,
     }
 
+
 @router.get("/proxy")
-async def get_proxy_config(db: aiosqlite.Connection = Depends(get_db)):
+async def get_proxy_config(
+    admin: str = Depends(require_admin),
+    db: aiosqlite.Connection = Depends(get_db),
+):
     cursor = await db.execute("SELECT value FROM system_settings WHERE key = 'proxy_config'")
     row = await cursor.fetchone()
     if row and row["value"]:
@@ -42,9 +59,20 @@ async def get_proxy_config(db: aiosqlite.Connection = Depends(get_db)):
         "proxy_mode": "all"
     }
 
+
 @router.post("/proxy")
-async def save_proxy_config(req: ProxyConfigRequest, db: aiosqlite.Connection = Depends(get_db)):
+async def save_proxy_config(
+    req: ProxyConfigRequest,
+    admin: str = Depends(require_admin),
+    db: aiosqlite.Connection = Depends(get_db),
+):
     val = req.model_dump()
+    if val.get("cf_worker_url"):
+        try:
+            validate_outbound_url(val["cf_worker_url"])
+        except UrlPolicyError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
     await db.execute("""
         INSERT INTO system_settings (key, value, updated_at)
         VALUES ('proxy_config', ?, CURRENT_TIMESTAMP)
@@ -65,10 +93,28 @@ async def save_proxy_config(req: ProxyConfigRequest, db: aiosqlite.Connection = 
 
     return {"success": True, "config": val}
 
+
 @router.post("/proxy/test")
-async def test_proxy_latency(req: ProxyConfigRequest):
-    """Tests latency to Cloudflare worker or Telegram API."""
-    target_url = req.cf_worker_url.rstrip("/") if req.cf_worker_url else "https://api.telegram.org"
+async def test_proxy_latency(
+    req: ProxyConfigRequest,
+    request: Request,
+    admin: str = Depends(require_admin),
+):
+    """Tests latency to Cloudflare worker or Telegram API.
+
+    The fetched target used to be whatever the browser sent, so anyone reaching
+    the panel could make it request internal URLs through the supplied proxy
+    (SSRF). Only public http(s) endpoints are accepted now.
+    """
+    lang = language_from_request(request)
+    target_url = (req.cf_worker_url or "").strip().rstrip("/") or "https://api.telegram.org"
+    try:
+        validate_outbound_url(target_url)
+    except UrlPolicyError as error:
+        raise HTTPException(
+            status_code=400, detail=t("api.net.blocked", lang, reason=str(error))
+        ) from error
+
     start = time.time()
     try:
         async with httpx.AsyncClient(timeout=6.0, proxy=req.http_proxy or None) as client:
@@ -79,29 +125,42 @@ async def test_proxy_latency(req: ProxyConfigRequest):
                 "status_code": resp.status_code,
                 "latency_ms": latency,
                 "url": target_url,
-                "message": f"Connection successful ({latency} ms)"
+                "message": t("api.net.ok", lang, ms=latency),
             }
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
             "url": target_url,
-            "message": f"Connection failed: {str(e)}"
+            "message": t("api.net.failed", lang, error=str(e)),
         }
 
 @router.get("/check-update")
-async def check_update() -> Dict[str, Any]:
+async def check_update(request: Request, admin: str = Depends(require_admin)) -> Dict[str, Any]:
     return {
         "current_version": settings.VERSION,
         "latest_version": settings.VERSION,
         "has_update": False,
-        "release_notes": "Up to date."
+        "release_notes": t("api.system.up_to_date", language_from_request(request)),
+        "self_update_enabled": settings.ENABLE_SELF_UPDATE,
     }
 
 @router.post("/update")
-async def trigger_update():
-    update_script = "/app/deploy/update.sh"
-    if os.path.exists(update_script):
-        subprocess.Popen(["bash", update_script])
-        return {"success": True, "message": "Zero-downtime update initiated in background."}
-    return {"success": False, "message": "Update script not found in environment."}
+async def trigger_update(request: Request, admin: str = Depends(require_admin)):
+    """Runs deploy/update.sh — but only for a signed-in admin who opted in.
+
+    This endpoint used to be unauthenticated and ran a bash script as soon as it
+    existed, i.e. unauthenticated remote code execution on every VPS install.
+    """
+    lang = language_from_request(request)
+    if not settings.ENABLE_SELF_UPDATE:
+        raise HTTPException(status_code=403, detail=t("api.system.update_disabled", lang))
+
+    update_script = os.environ.get("UPDATE_SCRIPT_PATH", "/app/deploy/update.sh")
+    if not os.path.exists(update_script):
+        raise HTTPException(status_code=404, detail=t("api.system.update_script_missing", lang))
+
+    subprocess.Popen([
+        "bash", update_script
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return {"success": True, "message": t("api.system.update_started", lang)}

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from aiogram import Bot, types
 from aiogram.enums import ParseMode
 
+from app.core.i18n import language_from_request, t
 from app.database import get_db
 from app.engine.dag_runner import DAGRunner
 from app.telegram.bot_manager import bot_manager
@@ -30,7 +31,7 @@ async def handle_telegram_webhook(
     )
     bot_row = await cursor.fetchone()
     if not bot_row or bot_row["webhook_secret"] != secret:
-        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+        raise HTTPException(status_code=403, detail=t("api.webhook.denied", language_from_request(request)))
 
     raw_data = await request.json()
     token = bot_row["token"]

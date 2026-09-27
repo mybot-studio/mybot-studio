@@ -91,12 +91,26 @@ Graph-editor fields share graph history; unrelated settings and simulator text f
 
 The panel uses React/Vite and ReactFlow; the Python API and Aiogram worker execute flows with per-bot SQLite storage (`bot_{id}.db`). Docker separates panel and worker services. JSON user variables do not require a separate database server. Proxy configuration can help in restricted networks but does not guarantee connectivity.
 
-English, Persian, Arabic and Russian locale files live in `frontend/src/locales/`; backend locale/font assets live under `backend/`. The floating preview supports editing and simulation, with minimize/restore controls. Treat preview appearance as approximate.
+English, Persian, Arabic and Russian locale files live in `frontend/src/locales/` for the panel and `backend/locales/` for API and bot-facing messages. The floating preview supports editing and simulation, with minimize/restore controls. Treat preview appearance as approximate.
 
 [MyBot Plugins Directory](https://github.com/AradPhpProgrammer/mybot-plugins) contains community extensions and templates. Review third-party code and its permissions before installation.
 
 ## Contributing and verification
 
-Open an issue with reproduction steps and redacted logs before proposing a feature. Run the relevant backend tests and frontend regression suites/build; publish actual results, not assumed pass counts. A successful build or dependency check does not verify browser interactions or Telegram delivery.
+Open an issue with reproduction steps and redacted logs before proposing a feature. CI (`.github/workflows/ci.yml`) runs the same checks listed below; publish actual results, not assumed pass counts. A successful build or dependency check does not verify browser interactions or Telegram delivery.
+
+```bash
+pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+python scripts/check_i18n.py --scan   # locale key parity + no hardcoded API strings
+cd backend && python -m pytest -q    # auth guard, locale contract, flow import validation
+cd frontend && npm ci && npm test    # token storage, language header, locale audit
+cd frontend && npm run build
+```
+
+Two rules apply to every API change:
+
+- Every string a person reads is a key under the `api` namespace of `backend/locales/<code>.json`, returned through `t(key, language_from_request(request), ...)`. `scripts/check_i18n.py --scan` fails on a hardcoded English response, a key missing from any of the four languages, or mismatched `{placeholders}`.
+- Every `/api` route except `/api/health` and `/api/auth/login` requires a `Bearer` token issued by this backend; the guard middleware enforces this before route code runs, so a newly added route is protected by default. `ADMIN_SECRET_PATH` only selects which account name the login form accepts and never appears in an API response or in the browser.
+
 
 Maintained by [AradPhpProgrammer](https://github.com/AradPhpProgrammer). Licensed under [AGPL-3.0 with the MyBot Extension & Plugin Exception](LICENSE); modifications to the core remain under AGPL. See the license text for the exception's scope.

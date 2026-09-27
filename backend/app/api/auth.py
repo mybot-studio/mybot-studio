@@ -1,90 +1,110 @@
-from datetime import datetime, timedelta
-import hashlib
-import hmac
-import os
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from jose import jwt
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.core.i18n import language_from_request, t
+from app.core.passwords import hash_password, needs_upgrade, verify_password
+from app.core.security import (
+    client_ip_of,
+    create_access_token,
+    login_attempts,
+    require_admin,
+)
 from app.database import get_db
 from app.models.schemas import LoginRequest, TokenResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+
 class ChangeCredentialsRequest(BaseModel):
     current_password: str
-    new_username: str
-    new_password: str
+    new_username: str = Field(min_length=3)
+    new_password: str = Field(min_length=8)
 
-def hash_password(password: str) -> str:
-    """Standard SHA-256 HMAC password hashing with fixed internal salt (100% stable, no passlib/bcrypt bugs)."""
-    salt = settings.JWT_SECRET.encode("utf-8")
-    h = hmac.new(salt, password.strip().encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"hmac_sha256${h}"
 
-def verify_password(plain_password: str, hashed: str) -> bool:
-    """Verifies plain password against hashed password."""
-    expected = hash_password(plain_password)
-    return hmac.compare_digest(expected, hashed)
+async def _find_admin(db: aiosqlite.Connection, username: str):
+    cursor = await db.execute(
+        "SELECT id, username, password_hash FROM admin_users WHERE username = ?", (username,)
+    )
+    return await cursor.fetchone()
 
-def create_access_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 @router.post("/login", response_model=TokenResponse)
-async def login(req: LoginRequest, db: aiosqlite.Connection = Depends(get_db)):
-    username = req.username.strip()
-    password = req.password.strip()
+async def login(req: LoginRequest, request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    """Issues the JWT that every other /api route now verifies.
 
-    cursor = await db.execute("SELECT id, username, password_hash FROM admin_users WHERE username = ?", (username,))
-    user = await cursor.fetchone()
-    
-    # Auto-seed default admin if database is fresh
-    if not user and username == settings.DEFAULT_ADMIN_USER:
-        if password == settings.DEFAULT_ADMIN_PASS:
-            h = hash_password(password)
-            await db.execute("INSERT INTO admin_users (username, password_hash) VALUES (?, ?)", (username, h))
-            await db.commit()
-            token = create_access_token({"sub": username})
-            return TokenResponse(access_token=token, admin_secret_path=settings.ADMIN_SECRET_PATH)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="نام کاربری یا رمز عبور اشتباه است.")
-        
+    The old code accepted `DEFAULT_ADMIN_PASS` as an always-valid fallback
+    password, which turned the shipped default into a permanent backdoor. Only a
+    hash stored in `admin_users` (seeded once by `init_db`) is honoured here.
+    """
+    lang = language_from_request(request)
+    username = (req.username or "").strip()
+    password = (req.password or "").strip()
+    ip = client_ip_of(request)
+
+    login_attempts.prune()
+    locked_for = login_attempts.locked_out_seconds(username, ip)
+    if locked_for:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=t("api.auth.locked", lang, seconds=locked_for),
+            headers={"Retry-After": str(locked_for)},
+        )
+
+    user = await _find_admin(db, username)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="نام کاربری یا رمز عبور اشتباه است.")
+        login_attempts.register_failure(username, ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=t("api.auth.invalid", lang)
+        )
 
-    # Check password (handles both new hmac_sha256 and fallback default admin pass)
-    is_valid = verify_password(password, user["password_hash"]) or (password == settings.DEFAULT_ADMIN_PASS and username == settings.DEFAULT_ADMIN_USER)
-    
-    if not is_valid:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="نام کاربری یا رمز عبور اشتباه است.")
-        
-    token = create_access_token({"sub": user["username"]})
-    return TokenResponse(access_token=token, admin_secret_path=settings.ADMIN_SECRET_PATH)
+    stored_hash = user["password_hash"]
+    if not verify_password(password, stored_hash, settings.JWT_SECRET):
+        login_attempts.register_failure(username, ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=t("api.auth.invalid", lang)
+        )
+
+    # Transparently replace pre-scrypt hashes with a properly salted one.
+    if needs_upgrade(stored_hash):
+        await db.execute(
+            "UPDATE admin_users SET password_hash = ? WHERE id = ?",
+            (hash_password(password), user["id"]),
+        )
+        await db.commit()
+
+    login_attempts.reset(username, ip)
+    token = create_access_token(user["username"])
+    return TokenResponse(access_token=token)
+
 
 @router.post("/change-credentials")
-async def change_credentials(req: ChangeCredentialsRequest, db: aiosqlite.Connection = Depends(get_db)):
-    cursor = await db.execute("SELECT id, username, password_hash FROM admin_users LIMIT 1")
+async def change_credentials(
+    req: ChangeCredentialsRequest,
+    request: Request,
+    admin: str = Depends(require_admin),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    lang = language_from_request(request)
+    cursor = await db.execute(
+        "SELECT id, username, password_hash FROM admin_users WHERE username = ?", (admin,)
+    )
     user = await cursor.fetchone()
-    
-    new_user = req.new_username.strip()
-    new_pass = req.new_password.strip()
-
     if not user:
-        if req.current_password.strip() != settings.DEFAULT_ADMIN_PASS:
-            raise HTTPException(status_code=400, detail="رمز عبور فعلی اشتباه است.")
-        new_hash = hash_password(new_pass)
-        await db.execute("INSERT INTO admin_users (username, password_hash) VALUES (?, ?)", (new_user, new_hash))
-        await db.commit()
-        return {"success": True, "message": "اطلاعات ورود با موفقیت بروزرسانی شد."}
+        raise HTTPException(status_code=404, detail=t("api.auth.not_configured", lang))
 
-    if not (verify_password(req.current_password.strip(), user["password_hash"]) or req.current_password.strip() == settings.DEFAULT_ADMIN_PASS):
-        raise HTTPException(status_code=400, detail="رمز عبور فعلی اشتباه است.")
+    if not verify_password((req.current_password or "").strip(), user["password_hash"], settings.JWT_SECRET):
+        raise HTTPException(status_code=400, detail=t("api.auth.current_password_wrong", lang))
 
-    new_hash = hash_password(new_pass)
-    await db.execute("UPDATE admin_users SET username = ?, password_hash = ? WHERE id = ?", (new_user, new_hash, user["id"]))
+    new_username = (req.new_username or "").strip()
+    if new_username != user["username"] and await _find_admin(db, new_username):
+        raise HTTPException(status_code=409, detail=t("api.auth.username_taken", lang))
+
+    await db.execute(
+        "UPDATE admin_users SET username = ?, password_hash = ? WHERE id = ?",
+        (new_username, hash_password((req.new_password or "").strip()), user["id"]),
+    )
     await db.commit()
-    return {"success": True, "message": "اطلاعات ورود با موفقیت بروزرسانی شد."}
+    return {"success": True, "message": t("api.auth.credentials_updated", lang)}
+

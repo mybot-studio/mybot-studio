@@ -9,7 +9,6 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    admin_secret_path: str
 
 # Bot Management
 class BotCreateRequest(BaseModel):

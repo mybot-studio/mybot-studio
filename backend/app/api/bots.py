@@ -8,8 +8,9 @@ from aiogram.types import BufferedInputFile, InputProfilePhotoStatic
 from pathlib import Path
 from typing import Any, Dict, List
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File
 
+from app.core.i18n import language_from_request, t
 from app.database import get_db
 from app.database_bots import AVAILABLE_USER_FIELDS, DEFAULT_TRACKED_FIELDS, get_bot_db, get_bot_db_path
 from app.models.schemas import BotCreateRequest, BotResponse, BotSettingsUpdate
@@ -18,6 +19,10 @@ from app.telegram.bot_manager import bot_manager
 logger = logging.getLogger("MyBot.BotsAPI")
 
 router = APIRouter(prefix="/api/bots", tags=["bots"])
+
+# Telegram profile pictures are small; the cap exists so a 2 GB upload cannot
+# turn into a 2 GB in-memory PIL decode.
+MAX_AVATAR_BYTES = 10 * 1024 * 1024
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_bots(db: aiosqlite.Connection = Depends(get_db)):
@@ -69,14 +74,14 @@ async def create_bot(req: BotCreateRequest, db: aiosqlite.Connection = Depends(g
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 @router.get("/{bot_id}")
-async def get_bot(bot_id: int, db: aiosqlite.Connection = Depends(get_db)):
+async def get_bot(bot_id: int, request: Request, db: aiosqlite.Connection = Depends(get_db)):
     cursor = await db.execute(
         "SELECT id, name, username, telegram_bot_id, is_active, settings, created_at FROM bots WHERE id = ?",
         (bot_id,)
     )
     bot = await cursor.fetchone()
     if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+        raise HTTPException(status_code=404, detail=t("api.bot.not_found", language_from_request(request)))
     settings_dict = json.loads(bot["settings"]) if bot["settings"] else {}
     settings_dict.pop("token", None)
     return {
@@ -92,11 +97,12 @@ async def get_bot(bot_id: int, db: aiosqlite.Connection = Depends(get_db)):
     }
 
 @router.put("/{bot_id}/settings")
-async def update_bot_settings(bot_id: int, req: BotSettingsUpdate, db: aiosqlite.Connection = Depends(get_db)):
+async def update_bot_settings(bot_id: int, req: BotSettingsUpdate, request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    lang = language_from_request(request)
     cursor = await db.execute("SELECT id, name, username, is_active, settings, token FROM bots WHERE id = ?", (bot_id,))
     bot = await cursor.fetchone()
     if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+        raise HTTPException(status_code=404, detail=t("api.bot.not_found", lang))
         
     current = json.loads(bot["settings"]) if bot["settings"] else {}
     current.pop("token", None)
@@ -178,11 +184,11 @@ async def update_bot_settings(bot_id: int, req: BotSettingsUpdate, db: aiosqlite
     }
 
 @router.post("/{bot_id}/toggle-active")
-async def toggle_bot_active(bot_id: int, db: aiosqlite.Connection = Depends(get_db)):
+async def toggle_bot_active(bot_id: int, request: Request, db: aiosqlite.Connection = Depends(get_db)):
     cursor = await db.execute("SELECT is_active FROM bots WHERE id = ?", (bot_id,))
     bot = await cursor.fetchone()
     if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
+        raise HTTPException(status_code=404, detail=t("api.bot.not_found", language_from_request(request)))
     new_state = 0 if bot["is_active"] else 1
     await db.execute("UPDATE bots SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_state, bot_id))
     await db.commit()
@@ -195,9 +201,9 @@ async def delete_bot(bot_id: int, db: aiosqlite.Connection = Depends(get_db)):
     return {"success": True, "deleted_id": bot_id}
 
 @router.post("/{bot_id}/sync-commands")
-async def sync_commands(bot_id: int, db: aiosqlite.Connection = Depends(get_db)):
+async def sync_commands(bot_id: int, request: Request, db: aiosqlite.Connection = Depends(get_db)):
     await bot_manager.sync_bot_commands(bot_id, db)
-    return {"success": True, "message": "Commands synced with Telegram Bot API."}
+    return {"success": True, "message": t("api.bot.commands_synced", language_from_request(request))}
 
 
 @router.post("/{bot_id}/refresh")
@@ -212,26 +218,32 @@ async def refresh_bot(bot_id: int, db: aiosqlite.Connection = Depends(get_db)):
 
 
 @router.post("/{bot_id}/avatar")
-async def upload_bot_avatar(bot_id: int, file: UploadFile = File(...), db: aiosqlite.Connection = Depends(get_db)) -> Dict[str, Any]:
+async def upload_bot_avatar(
+    bot_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> Dict[str, Any]:
     """Upload a static JPG using Telegram setMyProfilePhoto, then save preview."""
+    lang = language_from_request(request)
     cursor = await db.execute("SELECT token, settings FROM bots WHERE id = ?", (bot_id,))
     row = await cursor.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    content = await file.read(10 * 1024 * 1024 + 1)
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Avatar must be at most 10 MB")
+        raise HTTPException(status_code=404, detail=t("api.bot.not_found", lang))
+    content = await file.read(MAX_AVATAR_BYTES + 1)
+    if len(content) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=413, detail=t("api.bot.avatar_too_large", lang))
     try:
         with Image.open(BytesIO(content)) as image:
             if image.width * image.height > 20_000_000:
-                raise ValueError("Image too large")
+                raise ValueError("image too large")
             image = ImageOps.exif_transpose(image).convert("RGB")
             image.thumbnail((2048, 2048))
             encoded = BytesIO()
             image.save(encoded, format="JPEG", quality=90)
             content = encoded.getvalue()
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-        raise HTTPException(status_code=400, detail="Invalid or oversized avatar image") from None
+        raise HTTPException(status_code=400, detail=t("api.bot.avatar_invalid", lang)) from None
     settings_dict = json.loads(row["settings"]) if row["settings"] else {}
     proxy = None
     try:
@@ -247,11 +259,11 @@ async def upload_bot_avatar(bot_id: int, file: UploadFile = File(...), db: aiosq
         success = await bot.set_my_profile_photo(photo=InputProfilePhotoStatic(
             photo=BufferedInputFile(content, filename="avatar.jpg")), request_timeout=30)
         if success is not True:
-            raise HTTPException(status_code=502, detail="Telegram did not accept the profile photo")
+            raise HTTPException(status_code=502, detail=t("api.bot.photo_rejected", lang))
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=502, detail="Telegram profile photo upload failed") from None
+        raise HTTPException(status_code=502, detail=t("api.bot.photo_failed", lang)) from None
     finally:
         await bot.session.close()
     upload_dir = Path(__file__).resolve().parent.parent.parent / "uploads"
@@ -268,12 +280,12 @@ async def upload_bot_avatar(bot_id: int, file: UploadFile = File(...), db: aiosq
 
 
 @router.get("/{bot_id}/database-schema")
-async def get_bot_database_schema(bot_id: int, db: aiosqlite.Connection = Depends(get_db)) -> Dict[str, Any]:
+async def get_bot_database_schema(bot_id: int, request: Request, db: aiosqlite.Connection = Depends(get_db)) -> Dict[str, Any]:
     """Returns database configuration for this specific bot: isolated DB path, active tracked fields, and available fields."""
     cursor = await db.execute("SELECT settings FROM bots WHERE id = ?", (bot_id,))
     row = await cursor.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Bot not found")
+        raise HTTPException(status_code=404, detail=t("api.bot.not_found", language_from_request(request)))
 
     settings_dict = json.loads(row["settings"]) if row["settings"] else {}
     tracked = settings_dict.get("tracked_user_fields")

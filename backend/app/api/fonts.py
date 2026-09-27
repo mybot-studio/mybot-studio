@@ -1,15 +1,19 @@
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 
 from app.config import settings
+from app.core.i18n import language_from_request, t
+from app.core.security import require_admin
 
 router = APIRouter(prefix="/api/fonts", tags=["fonts"])
 FONTS_DIR = Path(settings.FONTS_DIR)
 FONTS_DIR.mkdir(parents=True, exist_ok=True)
 FONTS_CONFIG = FONTS_DIR / "fonts.json"
+ALLOWED_FONT_EXTENSIONS = (".woff2", ".woff", ".ttf", ".otf")
 
 DEFAULT_FONTS = [
     {
@@ -59,30 +63,53 @@ async def list_fonts():
     return load_fonts()
 
 @router.post("/upload")
-async def upload_font(file: UploadFile = File(...)):
-    """Allows uploading custom font files (.woff2, .woff, .ttf) with one click!"""
-    ext = Path(file.filename).suffix.lower()
-    if ext not in (".woff2", ".woff", ".ttf"):
-        raise HTTPException(status_code=400, detail="Only .woff2, .woff, and .ttf font files are accepted.")
+async def upload_font(
+    request: Request,
+    file: UploadFile = File(...),
+    admin: str = Depends(require_admin),
+):
+    """Installs a custom font (.woff2, .woff, .ttf, .otf) for the studio UI.
 
-    font_id = Path(file.filename).stem.lower().replace(" ", "-")
-    dest_path = FONTS_DIR / file.filename
+    `file.filename` is attacker controlled, so it used to be joined straight
+    onto FONTS_DIR; `../../etc/cron.d/x` style names wrote files anywhere the
+    service could write. The name is now reduced to a safe slug inside
+    FONTS_DIR, and the endpoint needs an authenticated admin.
+    """
+    lang = language_from_request(request)
+    original = Path(file.filename or "").name
+    ext = original.suffix.lower()
+    if ext not in ALLOWED_FONT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=t("api.fonts.bad_type", lang))
+
+    slug = re.sub(r"[^a-z0-9._-]+", "-", original.rsplit(".", 1)[0].lower()).strip("-.")
+    if not slug:
+        raise HTTPException(status_code=400, detail=t("api.fonts.bad_name", lang))
+
+    safe_name = f"{slug}{ext}"
+    dest_path = FONTS_DIR / safe_name
+    if dest_path.resolve().parent != FONTS_DIR.resolve():
+        raise HTTPException(status_code=400, detail=t("api.fonts.bad_name", lang))
 
     with open(dest_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     fonts = load_fonts()
     # Check if already exists
-    exists = any(f["id"] == font_id for f in fonts)
+    exists = any(f["id"] == slug for f in fonts)
     if not exists:
         fonts.append({
-            "id": font_id,
-            "name": font_id.capitalize(),
-            "family": f"'{font_id}', sans-serif",
+            "id": slug,
+            "name": slug.capitalize(),
+            "family": f"'{slug}', sans-serif",
             "category": "custom",
-            "file_name": file.filename
+            "file_name": safe_name
         })
         with open(FONTS_CONFIG, "w", encoding="utf-8") as f:
             json.dump(fonts, f, ensure_ascii=False, indent=2)
 
-    return {"success": True, "font_id": font_id, "name": font_id.capitalize()}
+    return {
+        "success": True,
+        "font_id": slug,
+        "name": slug.capitalize(),
+        "message": t("api.fonts.installed", lang, name=slug.capitalize()),
+    }
