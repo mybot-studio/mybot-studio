@@ -33,12 +33,16 @@ if "%ADMIN_PASS%"=="" set ADMIN_PASS=admin123456
 
 set /p CF_PROXY_URL="Enter Cloudflare Worker Proxy URL [optional]: "
 
+REM Generate a random per-install JWT signing key so no two installs share it.
+REM (A fixed secret would let anyone who reads this repo forge an admin token.)
+for /f "usebackq delims=" %%R in (`powershell -NoProfile -Command "$b=New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [BitConverter]::ToString($b)"`) do set "JWT_SECRET=%%R"
+
 (
 echo PANEL_PORT=%PANEL_PORT%
 echo ADMIN_SECRET_PATH=%ADMIN_SECRET_PATH%
 echo DEFAULT_ADMIN_USER=%ADMIN_USER%
 echo DEFAULT_ADMIN_PASS=%ADMIN_PASS%
-echo JWT_SECRET=mybot-secret-jwt-key-windows-82910
+echo JWT_SECRET=%JWT_SECRET%
 echo CF_PROXY_URL=%CF_PROXY_URL%
 echo HTTP_PROXY=
 ) > .env

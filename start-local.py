@@ -15,6 +15,7 @@ import shutil
 import socket
 import json
 import webbrowser
+import secrets
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -145,12 +146,13 @@ def main():
     # --------------------------------------------------------------
     if not (ROOT / ".env").exists():
         info("Creating .env configuration...")
+        jwt_key = secrets.token_hex(32)
         (ROOT / ".env").write_text(
             "PANEL_PORT=" + str(FE_PORT) + "\n"
             "ADMIN_SECRET_PATH=" + SECRET_PATH + "\n"
             "DEFAULT_ADMIN_USER=" + ADMIN_USER + "\n"
             "DEFAULT_ADMIN_PASS=" + ADMIN_PASS + "\n"
-            "JWT_SECRET=super-secret-mybot-token-local-runner-782910\n"
+            "JWT_SECRET=" + jwt_key + "\n"
             "CF_PROXY_URL=\n"
             "HTTP_PROXY=\n",
             encoding="utf-8",

@@ -37,7 +37,9 @@ services:
     environment:
       - DATABASE_PATH=/app/data/mybot.db
       - ADMIN_SECRET_PATH=${ADMIN_SECRET_PATH:-panel_adm_x9a2k}
-      - JWT_SECRET=${JWT_SECRET:-mybot-secret-jwt-key-production-82910}
+      # Fail closed: with no JWT_SECRET in .env the backend refuses to boot
+      # (see app/config.py) instead of running on a shared, guessable key.
+      - JWT_SECRET=${JWT_SECRET:-}
       - DEFAULT_ADMIN_USER=${DEFAULT_ADMIN_USER:-admin}
       - DEFAULT_ADMIN_PASS=${DEFAULT_ADMIN_PASS:-admin123456}
       - CF_PROXY_URL=${CF_PROXY_URL:-}
