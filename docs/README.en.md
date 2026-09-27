@@ -4,15 +4,18 @@ A self-hosted visual Telegram bot builder with a ReactFlow canvas, FastAPI backe
 
 [English](README.en.md) · [فارسی](README.fa.md) · [العربية](README.ar.md) · [Русский](README.ru.md)
 
-> **v0.2 — beta prerelease.** Clone from the `master` default branch (or the `0.2` development branch). Back up existing data before testing.
+> **v0.3-BETA — prerelease, not stable.** Clone from the `master` default branch. Back up existing data before testing.
 
-## What's new in v0.2
+## What's new in v0.3
 
-- **Dedicated Keyboard node** (`action_keyboard`): design inline or reply keyboards with rows, labels, identifiers and Telegram semantic button styles (`primary`, `success`, `danger`). Connect it directly after a Send Message or Edit Message node; reply keyboards require Send Message.
-- **Shared keyboard editor** on the node and in the preview's Edit tab, with row/button reordering. Existing embedded keyboard data and legacy reply-keyboard nodes remain supported.
-- **Responsive layout work** for narrow panels, dialogs and the floating chat preview, plus light/dark and RTL refinements. This is not a guarantee of identical Telegram rendering on every device.
-- **Graph undo/redo and snapshot saving** cover message text, keyboard definitions and graph edits. A successful save marks only the submitted snapshot clean; edits made while saving remain unsaved.
-- **Connection validation** explains invalid keyboard links; context-menu node insertion uses canvas coordinates after zoom/pan.
+This release is a **security and correctness pass** over the v0.2 feature set. The canvas, keyboard and simulator behaviour are unchanged; what changes is how the panel API authenticates, localizes and validates.
+
+- **Default-deny API authentication.** Every `/api` route now requires a backend-issued `Bearer` token, enforced by middleware before route code and by an explicit `require_admin` dependency on every admin router. Only the health, login, webhook, media and i18n-read paths stay public.
+- **Fail-closed configuration.** `config.py` no longer ships a guessable `JWT_SECRET` or a `DEFAULT_ADMIN_PASS`; a blank signing key refuses to boot. Installers generate a unique key per install.
+- **Localized API responses.** All user-visible API copy resolves from `backend/locales/<code>.json` (`en`, `fa`, `ar`, `ru`) through the caller's `Accept-Language`. Python exception text no longer reaches the browser.
+- **Validated flow imports.** `POST /api/flows/{bot}/import` rejects unknown node types, dangling or duplicate edges, a graph without a trigger, and over-long `callback_data` (HTTP 422) before writing; a rejected template leaves the stored flow untouched.
+- **SSRF + upload hardening.** Outbound URLs pass a private/loopback guard; language-pack and font uploads validate the derived name and cannot escape their target directory.
+- **Test + CI infrastructure.** New backend suites, `pytest.ini`, `requirements-dev.txt`, a `conftest.py` for the fail-closed config, and a CI workflow running the locale guardrail, the backend suite, the frontend audits and the Vite build on every push/PR. See [release notes](releases/v0.3.md).
 
 ## Telegram keyboard rules
 
@@ -27,7 +30,7 @@ Each send has **one `reply_markup`**: inline and reply markup cannot be combined
 Install Git, then clone the `master` default branch:
 
 ```bash
-git clone --branch master https://github.com/AradPhpProgrammer/mybot-studio.git
+git clone --branch master https://github.com/mybot-studio/mybot-studio.git
 cd mybot-studio
 ```
 
@@ -70,7 +73,7 @@ sudo bash install.sh
 
 The installer expects sibling `deploy/` and `backend/` files; do not execute a standalone downloaded script through a curl pipe. It prompts for bindings, admin settings and optional proxy configuration and builds Docker services. Its domain/SSL question alone does **not** provision a certificate: configure and verify HTTPS separately. On Windows with Docker/Compose available, review and run `install.bat`; for ordinary local development use `start-local.bat` instead.
 
-This prerelease is not production-hardened. Replace default admin credentials and signing secrets, verify the effective configuration, restrict panel access and back up `.env`, databases and uploads before exposing or upgrading a deployment. Do not publish credentials, bot tokens or private logs. A split worker container is not a zero-downtime guarantee; runtime changes require updating the worker too. See [release notes](releases/v0.2.md) for upgrade caveats.
+This prerelease is not production-hardened. Replace default admin credentials and signing secrets, verify the effective configuration, restrict panel access and back up `.env`, databases and uploads before exposing or upgrading a deployment. Do not publish credentials, bot tokens or private logs. A split worker container is not a zero-downtime guarantee; runtime changes require updating the worker too. See [release notes](releases/v0.3.md) for upgrade caveats.
 
 ## Studio workflow
 
@@ -93,10 +96,10 @@ The panel uses React/Vite and ReactFlow; the Python API and Aiogram worker execu
 
 English, Persian, Arabic and Russian locale files live in `frontend/src/locales/`; backend locale/font assets live under `backend/`. The floating preview supports editing and simulation, with minimize/restore controls. Treat preview appearance as approximate.
 
-[MyBot Plugins Directory](https://github.com/AradPhpProgrammer/mybot-plugins) contains community extensions and templates. Review third-party code and its permissions before installation.
+[MyBot Plugins Directory](https://github.com/mybot-studio/mybot-plugins) contains community extensions and templates. Review third-party code and its permissions before installation.
 
 ## Contributing and verification
 
-Open an issue with reproduction steps and redacted logs before proposing a feature. Run the relevant backend tests and frontend regression suites/build; publish actual results, not assumed pass counts. A successful build or dependency check does not verify browser interactions or Telegram delivery.
+Open an issue with reproduction steps and redacted logs before proposing a feature. AI agents working in this repository follow the rules in [`AGENTS.md`](../AGENTS.md); `scripts/check_i18n.py` is the authority on the localization contract and `AGENTS.md` documents, not overrides, it. Run the relevant backend tests and frontend regression suites/build; publish actual results, not assumed pass counts. A successful build or dependency check does not verify browser interactions or Telegram delivery.
 
 Maintained by [AradPhpProgrammer](https://github.com/AradPhpProgrammer). Licensed under [AGPL-3.0 with the MyBot Extension & Plugin Exception](../LICENSE); modifications to the core remain under AGPL. See the license text for the exception's scope.
